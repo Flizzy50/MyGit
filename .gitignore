@@ -1,0 +1,7 @@
+# Compiled binary
+/mygit
+/mygit.exe
+
+# Test artifacts
+*.test
+*.out
