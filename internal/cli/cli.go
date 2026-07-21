@@ -66,6 +66,8 @@ func init() {
 		initCmd,
 		hashObjectCmd,
 		catFileCmd,
+		addCmd,
+		lsFilesCmd,
 	)
 }
 
