@@ -17,8 +17,8 @@ copied into a `.git/objects` directory and read by `git cat-file`, and passes
 | 2 | `hash-object` | done |
 | 3 | `cat-file` | done |
 | 4 | `add`, `ls-files` (index) | done |
-| 5 | tree objects | next |
-| 6 | `commit` | |
+| 5 | `write-tree` (tree objects) | done |
+| 6 | `commit` | next |
 | 7 | `log` | |
 | 8 | `checkout` | |
 | 9–10 | `branch`, branch switching | |
@@ -95,6 +95,31 @@ The on-disk format is modeled on Git's index v2 (`DIRC` magic, version, count,
 — the index never leaves the repository, so unlike objects and refs it has no
 interchange contract to honor. `ls-files -s` mirrors `git ls-files --stage`, and
 for real source files it prints identical modes, blob IDs, and paths.
+
+## Trees and the Merkle DAG
+
+`write-tree` converts the flat index into nested tree objects and prints the
+root ID. A tree row is `<octal mode> SP <name> NUL <20 raw bytes of OID>` —
+note the ID is raw binary, not hex, and a directory's mode is `40000` with no
+leading zero (`cat-file -p` pads it to `040000` for display only).
+
+Entries are sorted with directories compared as if their names ended in `/`,
+so a file `src.txt` sorts *before* a directory `src` — `.` is 0x2E, `/` is
+0x2F. This is the usual reason a hand-built tree fails to match Git's hash.
+
+Because a tree embeds its children's IDs, and those IDs hash their children's
+full content, the root hash fingerprints the entire source tree. Editing one
+deep file rewrites only the trees along its path to the root; every untouched
+directory keeps its exact ID and is reused:
+
+```
+edit src/util/helper.go   ->  new blob, new util/, new src/, new root
+                              README.md blob and all other trees: unchanged
+                              7 objects on disk -> 11 (exactly 4 new)
+```
+
+Two directories with identical contents are literally the same tree object,
+stored once — deduplication applies to structure, not just file content.
 
 ## Tests
 

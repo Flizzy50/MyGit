@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 
 	"mygit/internal/object"
 	"mygit/internal/repository"
@@ -61,13 +62,32 @@ func runCatFile(env *Env, args []string) error {
 	case *showSize:
 		fmt.Fprintln(env.Stdout, len(payload))
 	case *pretty:
-		// A blob's payload is its file content verbatim, so pretty-printing is
-		// just writing it out — no trailing newline is added, because doing so
-		// would misreport files that lack one. Trees and commits will need
-		// real formatters once those types exist.
-		if _, err := env.Stdout.Write(payload); err != nil {
-			return err
-		}
+		return prettyPrint(env, typ, payload)
 	}
 	return nil
+}
+
+// prettyPrint renders an object for human consumption, which means something
+// different for each type.
+//
+// A blob is written verbatim; a tree is decoded into a readable listing. That
+// asymmetry is the point of the -p flag: the stored bytes of a tree are binary
+// (raw 20-byte IDs, no newlines) and dumping them to a terminal would be
+// useless. `cat-file tree <id>` in real Git emits those raw bytes, while -p
+// decodes — two different questions about the same object.
+func prettyPrint(env *Env, typ object.Type, payload []byte) error {
+	switch typ {
+	case object.TypeTree:
+		tree, err := object.ParseTree(payload)
+		if err != nil {
+			return err
+		}
+		_, err = io.WriteString(env.Stdout, tree.PrettyPrint())
+		return err
+	default:
+		// Blob content is emitted byte for byte with no trailing newline added,
+		// because adding one would misreport every file that lacks one.
+		_, err := env.Stdout.Write(payload)
+		return err
+	}
 }

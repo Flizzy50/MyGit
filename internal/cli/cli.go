@@ -68,6 +68,7 @@ func init() {
 		catFileCmd,
 		addCmd,
 		lsFilesCmd,
+		writeTreeCmd,
 	)
 }
 
