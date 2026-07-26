@@ -18,8 +18,8 @@ copied into a `.git/objects` directory and read by `git cat-file`, and passes
 | 3 | `cat-file` | done |
 | 4 | `add`, `ls-files` (index) | done |
 | 5 | `write-tree` (tree objects) | done |
-| 6 | `commit` | next |
-| 7 | `log` | |
+| 6 | `commit`, `rev-parse` (refs) | done |
+| 7 | `log` | next |
 | 8 | `checkout` | |
 | 9–10 | `branch`, branch switching | |
 | 11 | `merge` (three-way) | |
@@ -48,15 +48,16 @@ internal/
   object/                object model, framing, and file modes; hashing is pure
   store/                 loose-object database: shard, compress, write, verify
   index/                 the staging area: binary format, stat cache, checksum
+  refs/                  mutable pointers: HEAD, branches, symbolic refs
   fsutil/                atomic write-temp-fsync-rename, shared by mutable files
   repository/            .mygit layout, creation, and upward discovery
   cli/                   subcommand dispatch and output formatting
 ```
 
-The dependency graph is acyclic and points one way: `cli → repository → store →
-object`, with `index` and `fsutil` as leaf utilities. Nothing below `cli` knows
-a terminal exists, which is what makes the storage engine testable without a
-shell and reusable behind a future server.
+The dependency graph is acyclic and points one way: `cli → repository →
+{store, refs} → object`, with `index` and `fsutil` as leaf utilities. Nothing
+below `cli` knows a terminal exists, which is what makes the storage engine
+testable without a shell and reusable behind a future server.
 
 ## On-disk format
 
@@ -120,6 +121,39 @@ edit src/util/helper.go   ->  new blob, new util/, new src/, new root
 
 Two directories with identical contents are literally the same tree object,
 stored once — deduplication applies to structure, not just file content.
+
+## Commits and refs
+
+A commit is a root tree ID, zero or more parent IDs, an author and committer
+signature, and a message. Nothing else — no diff, no file list, no changeset.
+"What changed" is always computed by diffing against a parent, never stored.
+
+Commits store their tree and parent IDs as 40-char hex, unlike trees which use
+20 raw bytes: a commit is a text format meant to stay readable, a tree is a
+dense binary record. Parent pointers run *backward*, which is what makes
+commits immutable — appending a child never touches the parent.
+
+Refs are the mutable layer over that immutable graph. A branch is one file
+holding one object ID; creating a branch writes 41 bytes. HEAD adds a second
+indirection by holding `ref: refs/heads/main`, so committing advances the
+*branch* and never rewrites HEAD:
+
+```
+HEAD ──▶ refs/heads/main ──▶ commit C ──▶ commit B ──▶ commit A
+                             (new commits move the branch, not HEAD)
+```
+
+Because a commit ID hashes the timestamp and identity too, commit dates are
+injectable via `MYGIT_AUTHOR_DATE` / `GIT_AUTHOR_DATE` — which is what makes
+the byte-exact comparisons against real Git in the tests possible.
+
+## Interoperability
+
+A three-commit history authored entirely by `mygit` can be dropped into a real
+`.git/objects` directory and read by Git unchanged — `git log` shows the
+history, `git checkout` restores the files, and `git fsck --strict` reports no
+errors. With identity and timestamps pinned, both tools produce **identical
+commit hashes** for the same content.
 
 ## Tests
 

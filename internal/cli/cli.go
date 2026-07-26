@@ -69,6 +69,8 @@ func init() {
 		addCmd,
 		lsFilesCmd,
 		writeTreeCmd,
+		commitCmd,
+		revParseCmd,
 	)
 }
 

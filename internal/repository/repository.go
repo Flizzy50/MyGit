@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"mygit/internal/refs"
 	"mygit/internal/store"
 )
 
@@ -35,11 +36,17 @@ const DefaultBranch = "main"
 var ErrNotARepository = errors.New("not a mygit repository")
 
 // Repository is an opened repository: a working tree, its metadata directory,
-// and the object database inside it.
+// and the two databases inside it.
+//
+// The pairing of Objects and Refs is the whole architecture in miniature.
+// Objects is an immutable, content-addressed store that only ever grows; Refs
+// is a tiny mutable layer of names pointing into it. Every operation from here
+// on is some combination of "add objects" and "move a pointer".
 type Repository struct {
 	WorkTree string // absolute path to the working tree root
 	GitDir   string // absolute path to the .mygit directory
 	Objects  *store.Store
+	Refs     *refs.Store
 }
 
 // Path joins path elements onto the repository's metadata directory.
@@ -145,5 +152,6 @@ func open(workTree, gitDir string) *Repository {
 		WorkTree: workTree,
 		GitDir:   gitDir,
 		Objects:  store.New(filepath.Join(gitDir, "objects")),
+		Refs:     refs.New(gitDir),
 	}
 }
