@@ -19,8 +19,8 @@ copied into a `.git/objects` directory and read by `git cat-file`, and passes
 | 4 | `add`, `ls-files` (index) | done |
 | 5 | `write-tree` (tree objects) | done |
 | 6 | `commit`, `rev-parse` (refs) | done |
-| 7 | `log` | next |
-| 8 | `checkout` | |
+| 7 | `log` (DAG traversal) | done |
+| 8 | `checkout` | next |
 | 9–10 | `branch`, branch switching | |
 | 11 | `merge` (three-way) | |
 
@@ -49,6 +49,7 @@ internal/
   store/                 loose-object database: shard, compress, write, verify
   index/                 the staging area: binary format, stat cache, checksum
   refs/                  mutable pointers: HEAD, branches, symbolic refs
+  graph/                 DAG traversal: priority-queue walk, visited set
   fsutil/                atomic write-temp-fsync-rename, shared by mutable files
   repository/            .mygit layout, creation, and upward discovery
   cli/                   subcommand dispatch and output formatting
@@ -146,6 +147,41 @@ HEAD ──▶ refs/heads/main ──▶ commit C ──▶ commit B ──▶ c
 Because a commit ID hashes the timestamp and identity too, commit dates are
 injectable via `MYGIT_AUTHOR_DATE` / `GIT_AUTHOR_DATE` — which is what makes
 the byte-exact comparisons against real Git in the tests possible.
+
+## History traversal
+
+`log` walks the commit DAG backwards from a starting commit. Two decisions in
+[internal/graph](internal/graph/walk.go) carry the whole phase:
+
+**A visited set is mandatory, not an optimization.** Each merge diamond doubles
+the number of distinct paths from tip to root, so a walk without memory costs
+O(2ⁿ) on history with n diamonds — the shape any repo with a long-lived branch
+has. Marking commits when *enqueued* (not when emitted) makes it O(V + E). The
+test builds 30 diamonds: >1 billion paths, 91 commits, 91 object reads.
+
+**A priority queue, not a stack or a plain queue.** DFS would walk one branch
+to the root before showing anything from the other, burying recent work under
+ancient history. Ordering by committer date makes the walk a k-way merge of
+sorted streams, costing O(V log V + E):
+
+```
+        base
+       /    \
+   old-1   recent-1     long+old branch     vs.   short+new branch
+   old-2   recent-2
+   old-3     |
+       \    /
+        merge          log shows: merge, recent-2, recent-1, old-3 … base
+                       (base appears exactly once)
+```
+
+Cycles need no detection: a commit's ID hashes its parents' IDs, so a cycle
+would require a commit to know its own hash before computing it.
+Content-addressing makes cycles unrepresentable.
+
+The caveat is honest — date order trusts wall clocks, so skew or rebases can
+make a child look older than its parent. Real Git offers `--topo-order` for
+that; mygit does not.
 
 ## Interoperability
 

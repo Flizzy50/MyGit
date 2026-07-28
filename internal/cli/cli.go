@@ -71,6 +71,7 @@ func init() {
 		writeTreeCmd,
 		commitCmd,
 		revParseCmd,
+		logCmd,
 	)
 }
 
