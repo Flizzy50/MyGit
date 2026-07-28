@@ -72,6 +72,7 @@ func init() {
 		commitCmd,
 		revParseCmd,
 		logCmd,
+		checkoutCmd,
 	)
 }
 

@@ -20,8 +20,8 @@ copied into a `.git/objects` directory and read by `git cat-file`, and passes
 | 5 | `write-tree` (tree objects) | done |
 | 6 | `commit`, `rev-parse` (refs) | done |
 | 7 | `log` (DAG traversal) | done |
-| 8 | `checkout` | next |
-| 9–10 | `branch`, branch switching | |
+| 8 | `checkout` (worktree) | done |
+| 9–10 | `branch`, branch switching | next |
 | 11 | `merge` (three-way) | |
 
 ## Try it
@@ -50,6 +50,7 @@ internal/
   index/                 the staging area: binary format, stat cache, checksum
   refs/                  mutable pointers: HEAD, branches, symbolic refs
   graph/                 DAG traversal: priority-queue walk, visited set
+  worktree/              objects to filesystem: plan, validate, apply
   fsutil/                atomic write-temp-fsync-rename, shared by mutable files
   repository/            .mygit layout, creation, and upward discovery
   cli/                   subcommand dispatch and output formatting
@@ -182,6 +183,33 @@ Content-addressing makes cycles unrepresentable.
 The caveat is honest — date order trusts wall clocks, so skew or rebases can
 make a child look older than its parent. Real Git offers `--topo-order` for
 that; mygit does not.
+
+## Checkout
+
+`checkout` runs the pipeline backwards — objects onto the filesystem — and
+moves all three trees together: HEAD, the index, and the working tree. Leaving
+any one behind produces a repository that lies about itself.
+
+Writing objects was always safe, because objects are immutable and
+content-addressed. Checkout overwrites and deletes real files, and a file the
+user edited but never staged exists in exactly one place on Earth. So the
+design is strictly two-phase — **plan, validate, then apply**:
+
+```
+BuildPlan   diff current vs target trees   (unchanged files skipped by OID)
+Validate    reject if work would be lost   (no side effects yet)
+Apply       delete, then write, then prune (only once proven safe)
+```
+
+Two distinct hazards are refused, and conflating them is the usual bug: a
+*tracked* file with uncommitted edits (recoverable — an older version is in
+history), and an *untracked* file in the way (unrecoverable — never hashed,
+never stored). Deletions run before writes so a directory can become a file.
+Emptied directories are pruned, since Git cannot represent an empty directory.
+
+The index is a *cache* of what the working tree is believed to hold, so
+`BuildPlan` also confirms each supposedly-correct file actually exists —
+deleting a tracked file and checking out restores it, matching real Git.
 
 ## Interoperability
 
