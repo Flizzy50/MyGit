@@ -73,6 +73,7 @@ func init() {
 		revParseCmd,
 		logCmd,
 		checkoutCmd,
+		branchCmd,
 	)
 }
 

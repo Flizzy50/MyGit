@@ -21,8 +21,8 @@ copied into a `.git/objects` directory and read by `git cat-file`, and passes
 | 6 | `commit`, `rev-parse` (refs) | done |
 | 7 | `log` (DAG traversal) | done |
 | 8 | `checkout` (worktree) | done |
-| 9–10 | `branch`, branch switching | next |
-| 11 | `merge` (three-way) | |
+| 9–10 | `branch`, `checkout -b` (switching) | done |
+| 11 | `merge` (three-way) | next |
 
 ## Try it
 
@@ -210,6 +210,36 @@ Emptied directories are pruned, since Git cannot represent an empty directory.
 The index is a *cache* of what the working tree is believed to hold, so
 `BuildPlan` also confirms each supposedly-correct file actually exists —
 deleting a tracked file and checking out restores it, matching real Git.
+
+## Branches
+
+A branch is one file holding one object ID. Measured on a repo with 40 files
+and 43 objects:
+
+```
+before creating branches:  43 objects, 207,109 bytes
+after 5 branches:          43 objects, 207,109 bytes   (+205 bytes of refs)
+```
+
+Creating a branch copies no history, touches no files, and writes no objects —
+it names a graph that already exists. That is the whole reason the operation
+costing minutes in a server-side VCS costs nothing here: the cost of an
+operation follows from how the data is represented.
+
+`branch -d` refuses to delete an unmerged branch, and the check is a
+reachability question — `graph.IsAncestor(tip, HEAD)`. The refusal matters
+because deletion destroys *nothing*:
+
+```
+branch -D feature
+→ commit object fcfc413 still on disk?  commit
+→ reachable by name?                    unknown revision "feature"
+```
+
+Objects are immortal; *names* are not, and a name is the only practical way to
+find anything. The commits are stranded, not deleted — which is worse, because
+nothing looks broken afterwards. `IsAncestor` is also the foundation of the
+merge base in Phase 11.
 
 ## Interoperability
 

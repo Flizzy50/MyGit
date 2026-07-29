@@ -14,7 +14,7 @@ import (
 var checkoutCmd = &Command{
 	Name:    "checkout",
 	Summary: "restore the working tree to a branch or commit",
-	Usage:   "mygit checkout <branch|commit>",
+	Usage:   "mygit checkout [-b] <branch|commit>",
 	Run:     runCheckout,
 }
 
@@ -33,6 +33,7 @@ var checkoutCmd = &Command{
 // modified; an unmoved HEAD would make the next commit record the wrong parent.
 func runCheckout(env *Env, args []string) error {
 	fs := newFlagSet("checkout")
+	create := fs.Bool("b", false, "create the branch before switching to it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -44,6 +45,16 @@ func runCheckout(env *Env, args []string) error {
 	repo, err := repository.Discover(env.Dir)
 	if err != nil {
 		return err
+	}
+
+	// -b is pure convenience: create the ref at the current position, then fall
+	// through to the ordinary switch. Because the new branch points where HEAD
+	// already is, the working tree needs no changes at all — which is why
+	// starting a branch is instantaneous no matter how large the project.
+	if *create {
+		if err := createBranch(env, repo, target, "HEAD"); err != nil {
+			return err
+		}
 	}
 
 	// Branch names win over raw object IDs, matching Git. The distinction

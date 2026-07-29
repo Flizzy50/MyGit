@@ -29,6 +29,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"mygit/internal/fsutil"
@@ -200,6 +201,112 @@ func (s *Store) SetHeadDetached(oid object.OID) error {
 func (s *Store) Exists(name string) bool {
 	_, err := s.readRefFile(name)
 	return err == nil
+}
+
+// Ref is a resolved reference: a name and the object it points at.
+type Ref struct {
+	Name string
+	OID  object.OID
+}
+
+// Short strips the refs/heads/ prefix for display.
+func (r Ref) Short() string { return strings.TrimPrefix(r.Name, HeadsPrefix) }
+
+// List returns every reference under a prefix, sorted by name.
+//
+// The implementation walks a directory tree, which is worth noticing: there is
+// no branch registry, no index of refs, no metadata file listing what exists.
+// The filesystem *is* the database, exactly as it is for objects. Listing
+// branches is readdir, and a branch exists precisely when its file does.
+//
+// This is also why real Git eventually added packed-refs. One file per branch
+// is beautifully simple until a repository has fifty thousand of them, at which
+// point listing branches means fifty thousand stat calls and the directory
+// itself becomes the bottleneck. mygit keeps the simple form.
+func (s *Store) List(prefix string) ([]Ref, error) {
+	root := filepath.Join(s.gitDir, filepath.FromSlash(prefix))
+
+	var out []Ref
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			// A missing refs/heads simply means no branches exist yet, which is
+			// the state of a freshly initialized repository.
+			if errors.Is(err, os.ErrNotExist) {
+				return filepath.SkipAll
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		rel, err := filepath.Rel(s.gitDir, path)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(rel)
+
+		oid, err := s.Resolve(name)
+		if err != nil {
+			// Skip anything unreadable rather than failing the whole listing;
+			// one malformed ref should not hide the other forty-nine.
+			return nil
+		}
+		out = append(out, Ref{Name: name, OID: oid})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing refs under %s: %w", prefix, err)
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// Delete removes a reference.
+//
+// This deletes 41 bytes and no objects whatsoever. Every commit the branch
+// pointed at is still on disk, byte for byte — it has merely become
+// unreachable, because reachability in Git means "findable by walking parent
+// pointers from some ref". Deleting the last ref that reached a commit does not
+// destroy it; it strands it, and a later garbage collection is what actually
+// reclaims the space.
+func (s *Store) Delete(name string) error {
+	if err := validateRefName(name); err != nil {
+		return err
+	}
+	full := filepath.Join(s.gitDir, filepath.FromSlash(name))
+	if err := os.Remove(full); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: %s", ErrNotFound, name)
+		}
+		return fmt.Errorf("deleting ref %s: %w", name, err)
+	}
+
+	// Hierarchical names like refs/heads/feature/login leave an empty
+	// directory behind, which would make the namespace look occupied.
+	pruneEmptyDirs(s.gitDir, filepath.Dir(full))
+	return nil
+}
+
+// pruneEmptyDirs removes directories emptied by a ref deletion, stopping at the
+// repository directory.
+func pruneEmptyDirs(gitDir, dir string) {
+	root := filepath.Clean(gitDir)
+	for {
+		dir = filepath.Clean(dir)
+		if dir == root || !strings.HasPrefix(dir, root) {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) > 0 {
+			return
+		}
+		if err := os.Remove(dir); err != nil {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
 }
 
 // BranchRef expands a short branch name into its full reference name.
