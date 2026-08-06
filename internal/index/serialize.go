@@ -59,8 +59,16 @@ const (
 	// bytes. Git's is 62 because it also stores ctime, dev, ino, uid, and gid.
 	entryFixedSize = 4 + 4 + 4 + 4 + object.OIDSize + 2
 	entryAlignment = 8
-	nameMask       = 0x0FFF // flags field caps the stored name length here
 	trailerSize    = sha1.Size
+
+	// The 16-bit flags field is partitioned exactly as Git partitions it:
+	// the low 12 bits hold the name length, and bits 12-13 hold the merge
+	// stage. Reserving those two bits from the start is why conflict support
+	// needed no format change — the space was already there, which is a good
+	// argument for copying a mature format rather than inventing one.
+	nameMask   = 0x0FFF
+	stageShift = 12
+	stageMask  = 0x3
 )
 
 // Load reads and verifies the index at path.
@@ -106,7 +114,7 @@ func (idx *Index) Encode() []byte {
 		if nameLen > nameMask {
 			nameLen = nameMask // the length is a hint; the NUL is the real terminator
 		}
-		writeUint16(&buf, uint16(nameLen))
+		writeUint16(&buf, uint16(e.Stage&stageMask)<<stageShift|uint16(nameLen))
 
 		buf.WriteString(e.Path)
 
@@ -178,6 +186,10 @@ func decodeEntry(body []byte, pos int) (*Entry, int, error) {
 		Mode:      object.Mode(binary.BigEndian.Uint32(body[pos+12 : pos+16])),
 	}
 	copy(e.OID[:], body[pos+16:pos+16+object.OIDSize])
+
+	flags := binary.BigEndian.Uint16(body[pos+16+object.OIDSize : pos+entryFixedSize])
+	e.Stage = Stage(flags>>stageShift) & Stage(stageMask)
+
 	// The stored name length is only a hint (and is capped), so the NUL
 	// terminator is authoritative. Scanning for it also validates the record.
 	nameStart := pos + entryFixedSize

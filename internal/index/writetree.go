@@ -49,6 +49,14 @@ type ObjectWriter interface {
 func BuildTree(idx *Index, w ObjectWriter) (object.OID, error) {
 	root := newNode()
 	for _, e := range idx.Entries() {
+		// Only stage-zero entries describe a committable snapshot. Conflicted
+		// paths carry up to three entries and have no single correct content,
+		// so a tree cannot be built from them; commit refuses before reaching
+		// here, and this guard keeps a caller that forgets from silently
+		// picking whichever version sorted last.
+		if e.Stage != StageNormal {
+			return object.OID{}, fmt.Errorf("cannot build tree: %q has unresolved merge conflicts", e.Path)
+		}
 		if err := root.insert(strings.Split(e.Path, "/"), e); err != nil {
 			return object.OID{}, err
 		}

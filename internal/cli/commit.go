@@ -71,6 +71,16 @@ func runCommit(env *Env, args []string) error {
 		return err
 	}
 
+	// An index holding nonzero merge stages describes an unfinished merge, not
+	// a snapshot. Committing it would silently record whichever version
+	// happened to be on disk — conflict markers and all — as the resolution, so
+	// this refuses until every path is genuinely resolved.
+	if idx.HasConflicts() {
+		return fmt.Errorf("cannot commit: unresolved conflicts remain in\n\t%s\n"+
+			"resolve them and stage the results with `mygit add`",
+			strings.Join(idx.ConflictedPaths(), "\n\t"))
+	}
+
 	tree, err := index.BuildTree(idx, repo.Objects)
 	if err != nil {
 		return err
@@ -86,8 +96,25 @@ func runCommit(env *Env, args []string) error {
 		parents = append(parents, head.OID)
 	}
 
-	if err := checkSomethingToCommit(repo, head, tree); err != nil {
+	// A suspended merge contributes the second parent. This is what makes a
+	// resolved conflict produce a real merge commit rather than an ordinary one
+	// that silently drops the incoming branch from history.
+	mergeHead, _, merging, err := readMergeState(repo)
+	if err != nil {
 		return err
+	}
+	if merging {
+		parents = append(parents, mergeHead)
+	}
+
+	// The "nothing to commit" guard is skipped while merging. Resolving every
+	// conflict in favour of our side yields a tree identical to HEAD's, but the
+	// commit is still meaningful: it is the node that joins the two histories,
+	// and refusing it would strand the branch being merged.
+	if !merging {
+		if err := checkSomethingToCommit(repo, head, tree); err != nil {
+			return err
+		}
 	}
 
 	commit := &object.Commit{
@@ -109,6 +136,15 @@ func runCommit(env *Env, args []string) error {
 	// nothing. It simply leaves garbage that a future gc would collect.
 	if err := repo.Refs.UpdateHead(oid); err != nil {
 		return err
+	}
+
+	// Only now that the merge commit exists and the branch points at it is the
+	// merge genuinely over, so this is the last possible moment to clear the
+	// state — and the only one where a crash cannot lose the second parent.
+	if merging {
+		if err := clearMergeState(repo); err != nil {
+			return err
+		}
 	}
 
 	printCommitSummary(env, head, commit, oid)

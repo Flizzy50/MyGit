@@ -38,6 +38,32 @@ import (
 	"mygit/internal/object"
 )
 
+// Stage marks which side of an unresolved merge an entry belongs to.
+//
+// Ordinarily every entry is StageNormal and the index holds exactly one entry
+// per path. During a conflicted merge that invariant is deliberately relaxed:
+// the same path carries up to three entries at once, one per version, and the
+// index becomes the record of an in-progress merge rather than a clean
+// snapshot.
+//
+//	StageNormal (0)  the usual, unconflicted state
+//	StageBase   (1)  the merge base: what both sides started from
+//	StageOurs   (2)  the current branch's version
+//	StageTheirs (3)  the incoming branch's version
+//
+// Storing all three is what lets a conflict be resolved later without redoing
+// any work: the information needed to re-run the merge, or to run a different
+// merge tool, is preserved. It is also how Git knows a merge is unfinished — a
+// commit is refused while any entry sits at a nonzero stage.
+type Stage uint16
+
+const (
+	StageNormal Stage = 0
+	StageBase   Stage = 1
+	StageOurs   Stage = 2
+	StageTheirs Stage = 3
+)
+
 // Entry is one staged file.
 //
 // The stat fields are the cache. mygit stores only mtime and size, the two
@@ -50,6 +76,7 @@ import (
 // different inode within the same timestamp.
 type Entry struct {
 	Path      string      // slash-separated, relative to the work tree root
+	Stage     Stage       // StageNormal unless part of an unresolved merge
 	Mode      object.Mode // ModeRegular, ModeExecutable, or ModeSymlink
 	OID       object.OID  // blob ID of the staged content
 	MtimeSec  uint32      // modification time, whole seconds
@@ -83,51 +110,108 @@ func (e *Entry) MatchesStat(fi os.FileInfo) bool {
 // plus sort-on-read trades that for simpler mutation at the cost of an
 // O(n log n) sort per read, which is negligible next to the file I/O around it.
 type Index struct {
-	entries map[string]*Entry
+	entries map[key]*Entry
+}
+
+// key identifies an entry. Including the stage is what permits three entries
+// for one path during a conflicted merge while still keeping O(1) lookup.
+type key struct {
+	path  string
+	stage Stage
 }
 
 // New returns an empty index, the state of a repository with nothing staged.
 func New() *Index {
-	return &Index{entries: make(map[string]*Entry)}
+	return &Index{entries: make(map[key]*Entry)}
 }
 
-// Add stages an entry, replacing any existing entry for the same path.
+// Add stages an entry, replacing any existing entry for the same path and
+// stage.
 //
 // Re-staging a path is how an edit supersedes an earlier version: the map keeps
-// exactly one entry per path, so the newest content wins. Because blobs are
-// content-addressed, staging identical content twice writes no new object.
-func (idx *Index) Add(e *Entry) { idx.entries[e.Path] = e }
+// exactly one entry per (path, stage), so the newest content wins. Because
+// blobs are content-addressed, staging identical content twice writes no new
+// object.
+func (idx *Index) Add(e *Entry) { idx.entries[key{e.Path, e.Stage}] = e }
 
-// Remove unstages a path, reporting whether it was present. This is what a
-// future `rm` builds on, and what `add` of a deleted directory would call.
+// Remove unstages a path at every stage, reporting whether anything was
+// present.
+//
+// Clearing all stages together is what "resolving" a conflict means: the three
+// competing versions are replaced by a single stage-zero entry, and leaving any
+// of them behind would keep the merge looking unfinished.
 func (idx *Index) Remove(path string) bool {
-	_, ok := idx.entries[path]
-	delete(idx.entries, path)
-	return ok
+	found := false
+	for _, stage := range []Stage{StageNormal, StageBase, StageOurs, StageTheirs} {
+		if _, ok := idx.entries[key{path, stage}]; ok {
+			delete(idx.entries, key{path, stage})
+			found = true
+		}
+	}
+	return found
 }
 
-// Get returns the entry for a path, if staged.
+// Get returns the ordinary, unconflicted entry for a path.
 func (idx *Index) Get(path string) (*Entry, bool) {
-	e, ok := idx.entries[path]
+	e, ok := idx.entries[key{path, StageNormal}]
 	return e, ok
 }
 
-// Len reports the number of staged entries.
+// GetStage returns the entry for a path at a specific merge stage.
+func (idx *Index) GetStage(path string, stage Stage) (*Entry, bool) {
+	e, ok := idx.entries[key{path, stage}]
+	return e, ok
+}
+
+// Len reports the number of entries, counting each stage separately.
 func (idx *Index) Len() int { return len(idx.entries) }
 
-// Entries returns all staged entries sorted by path, byte for byte.
+// HasConflicts reports whether any entry sits at a nonzero stage, meaning a
+// merge is still unresolved. Commit consults this and refuses.
+func (idx *Index) HasConflicts() bool {
+	for k := range idx.entries {
+		if k.stage != StageNormal {
+			return true
+		}
+	}
+	return false
+}
+
+// ConflictedPaths returns the sorted paths that still have unresolved stages.
+func (idx *Index) ConflictedPaths() []string {
+	seen := make(map[string]bool)
+	for k := range idx.entries {
+		if k.stage != StageNormal {
+			seen[k.path] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for path := range seen {
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Entries returns all entries sorted by path, then by stage.
 //
 // The sort order is not cosmetic. Git requires index and tree entries to be
 // sorted by raw byte value of the path, because that ordering is part of what
 // gets hashed into a tree object: two indexes with the same entries in
 // different orders must produce the same tree, so a canonical order is
 // mandatory. Sorting on plain Go string comparison gives byte order for the
-// ASCII/UTF-8 paths mygit handles.
+// ASCII/UTF-8 paths mygit handles. Stage breaks ties so conflicted entries
+// appear base, ours, theirs — the order Git prints them in.
 func (idx *Index) Entries() []*Entry {
 	out := make([]*Entry, 0, len(idx.entries))
 	for _, e := range idx.entries {
 		out = append(out, e)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Path != out[j].Path {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].Stage < out[j].Stage
+	})
 	return out
 }

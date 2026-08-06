@@ -22,7 +22,7 @@ copied into a `.git/objects` directory and read by `git cat-file`, and passes
 | 7 | `log` (DAG traversal) | done |
 | 8 | `checkout` (worktree) | done |
 | 9–10 | `branch`, `checkout -b` (switching) | done |
-| 11 | `merge` (three-way) | next |
+| 11 | `merge` (three-way) | done |
 
 ## Try it
 
@@ -51,6 +51,7 @@ internal/
   refs/                  mutable pointers: HEAD, branches, symbolic refs
   graph/                 DAG traversal: priority-queue walk, visited set
   worktree/              objects to filesystem: plan, validate, apply
+  merge/                 three-way merge: LCS diff, diff3, tree reconciliation
   fsutil/                atomic write-temp-fsync-rename, shared by mutable files
   repository/            .mygit layout, creation, and upward discovery
   cli/                   subcommand dispatch and output formatting
@@ -240,6 +241,51 @@ Objects are immortal; *names* are not, and a name is the only practical way to
 find anything. The commits are stranded, not deleted — which is worse, because
 nothing looks broken afterwards. `IsAncestor` is also the foundation of the
 merge base in Phase 11.
+
+## Merge
+
+Merging starts with the **merge base**: the lowest common ancestor of the two
+tips. Without it, "ours has a line theirs lacks" is ambiguous — one side added
+it, or the other deleted it — and those need opposite resolutions. The base
+gives each difference a direction, which is the whole reason it is called a
+*three-way* merge.
+
+This is not the textbook LCA problem. Textbook algorithms assume a tree, where
+the answer is unique. A commit graph is a DAG, so two commits can have several
+incomparable lowest common ancestors:
+
+```
+  A     B          MergeBases(C, D) = {A, B}
+  │╲   ╱│          Neither is an ancestor of the other, so neither can
+  │  ╳  │          be discarded. Returning a set is forced by the data
+  │╱   ╲│          model, not a design choice.
+  C     D
+```
+
+`graph.MergeBases` runs in O(V + E): two walks recording parent edges, an
+intersection, then one in-memory sweep seeded with the *parents* of every
+common ancestor to drop the redundant ones. Caching edges during the walks is
+what keeps it at two passes rather than four.
+
+Three outcomes, all decided by graph shape before any file is read — already
+up to date, fast-forward, or a true merge. File content is merged with diff3:
+lines the base shares with *both* sides become anchors, and each region between
+anchors resolves independently. Two people making the *identical* edit is not a
+conflict.
+
+Conflicts record all three versions in the index at stages 1/2/3 — the flags
+field reserved those bits back in Phase 4, so this needed no format change:
+
+```
+100644 e4d0f389… 1  cfg.txt   (base)
+100644 767032f6… 2  cfg.txt   (ours)
+100644 be81e3ea… 3  cfg.txt   (theirs)
+```
+
+`commit` refuses while any nonzero stage exists; `add` clears the stages, which
+is how a resolution is declared. `MERGE_HEAD` persists the second parent across
+the pause, so a resolved conflict produces a real two-parent merge commit
+rather than silently dropping the incoming branch from history.
 
 ## Interoperability
 

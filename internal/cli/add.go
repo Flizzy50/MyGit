@@ -121,6 +121,13 @@ func stageFile(repo *repository.Repository, idx *index.Index, abs string, info o
 		return err
 	}
 
+	// Clear any merge stages for this path first. Staging a file after a
+	// conflict is exactly how a resolution is declared: the three competing
+	// versions are discarded and replaced by the single stage-zero entry below.
+	// Without this, the stages would linger and the merge would look unfinished
+	// forever.
+	idx.Remove(rel)
+
 	mt := info.ModTime()
 	idx.Add(&index.Entry{
 		Path:      rel,

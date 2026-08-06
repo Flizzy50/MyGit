@@ -37,12 +37,11 @@ func runLsFiles(env *Env, args []string) error {
 
 	for _, e := range idx.Entries() {
 		if *stage {
-			// The trailing "0" is the merge stage. mygit only ever writes
-			// stage 0, the ordinary unconflicted state. Stages 1, 2, and 3 —
-			// base, ours, theirs — appear only during an unresolved merge, and
-			// arrive in Phase 11. Emitting the column now keeps the output
-			// shape stable once conflicts exist.
-			fmt.Fprintf(env.Stdout, "%s %s 0\t%s\n", e.Mode, e.OID, e.Path)
+			// The trailing number is the merge stage: 0 for an ordinary entry,
+			// and 1, 2, or 3 for the base, ours, and theirs versions of a path
+			// with an unresolved conflict. A conflicted path therefore appears
+			// three times here, which is exactly how Git reports it.
+			fmt.Fprintf(env.Stdout, "%s %s %d\t%s\n", e.Mode, e.OID, e.Stage, e.Path)
 		} else {
 			fmt.Fprintln(env.Stdout, e.Path)
 		}

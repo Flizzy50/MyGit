@@ -74,6 +74,7 @@ func init() {
 		logCmd,
 		checkoutCmd,
 		branchCmd,
+		mergeCmd,
 	)
 }
 

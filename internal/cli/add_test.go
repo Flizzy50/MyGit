@@ -7,6 +7,24 @@ import (
 	"testing"
 )
 
+// rmFile deletes a working-tree file.
+func rmFile(t *testing.T, dir, rel string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+		t.Fatalf("removing %s: %v", rel, err)
+	}
+}
+
+// rmIndex discards the index so a following `add .` rebuilds it from the
+// working tree. This stands in for `mygit rm`, which does not exist yet, and is
+// the only way a test can stage a deletion.
+func rmIndex(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(dir, ".mygit", "index")); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("removing index: %v", err)
+	}
+}
+
 func write(t *testing.T, dir, rel, content string) {
 	t.Helper()
 	path := filepath.Join(dir, filepath.FromSlash(rel))
